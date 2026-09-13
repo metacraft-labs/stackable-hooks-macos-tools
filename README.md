@@ -43,7 +43,7 @@ one package, built once, depended on by name — see
 <bundle>/lib/*.dylib       # bundled non-system dylibs
 ```
 
-56 tools: the shells (`bash`, `dash`, `zsh`), the coreutils set, findutils,
+56 portable tools: the shells (`bash`, `dash`, `zsh`), the coreutils set, findutils,
 GNU grep/sed/awk, tar/gzip/xz, and `which`/`diff`/`cmp`. Every Mach-O is
 rewritten with `install_name_tool` so it carries **no `/nix/store`
 references** and runs on a machine without Nix — the bundle is a package
@@ -91,10 +91,16 @@ see the open question in the packaging spec.
 
 ## What it deliberately does not ship
 
-- **A C compiler.** `/usr/bin/cc` is SIP-protected and un-injectable too, but
-  substituting a *different* compiler changes what gets built, not just what
-  gets observed. Reprobuild resolves a non-SIP compiler itself
-  (`REPRO_BOOTSTRAP_CC`, and its PATH search prefers one).
+- **A C compiler.** Not because the compiler does not need a drop-in — it very
+  much does, `/usr/bin/cc` being a SIP-protected `xcode_select` shim — but
+  because the right drop-in is not a shipped binary. `xcrun -f clang` resolves
+  Apple's *own* compiler at a path outside every SIP prefix, signed
+  `flags=0x0(none)`, which takes the injection normally. So the toolchain
+  drop-ins (`cc`, `clang`, `c++`, `clang++`, `cpp`, `ld`, `as`, `ar`, `nm`,
+  `strip`, `lipo`, `libtool`) are **host-resolved symlinks created at populate
+  time**, not payload: a redirect to the same binary the shim would have
+  exec'd, so nothing about the build changes. See metacraft-labs/io-mon#18.
+  Redistributing Apple's 290 MB toolchain would be neither legal nor useful.
 - **`arch(1)`.** There is no non-Apple build with Apple's semantics
   (`arch -x86_64 …`). It stays un-injectable until the EndpointSecurity
   backend lands. An explicit gap beats a drop-in that silently misbehaves.
