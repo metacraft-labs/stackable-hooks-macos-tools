@@ -1,0 +1,25 @@
+# arch(1) — the tool that motivated this repo. GNU coreutils' `arch` only
+# PRINTS the machine type; Apple's also RUNS a chosen slice of a universal
+# binary, and `nix` uses exactly that mode to probe for Rosetta
+# (`arch -arch x86_64 /usr/bin/true`). A GNU stand-in answers wrong rather
+# than merely unobserved, which is why this tool must be tier 1.
+# no arguments: print the machine type
+-h
+-arch arm64 /bin/echo hi
+-arch x86_64 /bin/echo hi
+-arch bogusarch /bin/echo hi
+-32 /bin/echo hi
+-64 /bin/echo hi
+-arm64 /bin/echo hi
+-x86_64 /bin/echo hi
+-e FOO=bar /usr/bin/true
+-d PATH /usr/bin/true
+-c /usr/bin/true
+-arch arm64 -arch x86_64 /bin/echo hi
+-arch
+./nonexistent-prog
+-arch arm64 ./nonexistent-prog
+--arch arm64 /bin/echo q
+-arch=arm64 /bin/echo q
+-arch arm64 -e A=1 -e B=2 /usr/bin/true
+-arch arm64 /usr/bin/true

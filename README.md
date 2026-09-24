@@ -1,148 +1,127 @@
 # stackable-hooks-macos-tools
 
-A relocatable bundle of **non-SIP macOS command-line tools**, shared by every
-implementation of the stackable-hooks framework.
+Non-SIP macOS drop-in binaries, shared by every language implementation of the
+stackable-hooks framework (`nim-stackable-hooks`, io-mon, agent-harbor, and the
+reprobuild monitor that sits on top of them).
 
-## Why this exists
+## The problem
 
-macOS System Integrity Protection strips `DYLD_INSERT_LIBRARIES` when a binary
-under `/bin`, `/sbin`, `/usr/bin` or `/usr/sbin` is exec'd. An interpose-based
-monitor therefore goes blind the moment a monitored process shells out to
-`/bin/sh`, `/usr/bin/grep` or `/usr/bin/sed` — and it goes blind *silently*,
-which for a dependency-capturing monitor is the cardinal sin: an incomplete
-input set reported as complete is a false cache hit.
+On macOS, System Integrity Protection strips `DYLD_INSERT_LIBRARIES` from the
+environment whenever a binary under `/bin`, `/sbin`, `/usr/bin` or `/usr/sbin`
+is `exec`'d. A monitor that follows a process tree by injecting a shim
+therefore goes **blind** the moment a build shells out to `/bin/sh`,
+`/usr/bin/grep` or `/usr/bin/sed` — which is to say, immediately.
 
-The fix is to exec a **different build** of the same tool. It cannot be a copy
-of the Apple binary: AMFI `SIGKILL`s a relocated copy of a platform binary on
-launch, even ad-hoc re-signed. So the drop-in has to be a genuinely non-Apple
-build — GNU coreutils, GNU grep, bash — laid out in the shape of the SIP
-filesystem so a hook can rewrite `/usr/bin/grep` to `<bundle>/usr/bin/grep`.
+AMFI closes the obvious workaround: it `SIGKILL`s a *copy* of a restricted
+Apple platform binary at launch, even after ad-hoc re-signing. So the
+replacement cannot be the system binary moved somewhere else. It has to be a
+genuinely different **build**.
 
-## Why it is its own repository
+io-mon's `rewriteSipPath` redirects such an exec to `<tools-dir>/usr/bin/<tool>`.
+This repo produces that directory.
 
-Every stackable-hooks implementation needs the same tools:
+## The part that is easy to get wrong
 
-| Consumer | Uses them for |
-|---|---|
-| `nim-stackable-hooks` | the Nim framework's SIP path rewriting (`rewriteSipPath`) |
-| `io-mon` | dependency capture across a SIP boundary |
-| `reprobuild` | monitored build actions (and, through them, the action cache) |
-| `codetracer` | recording across SIP-protected children |
-| Agent Harbor | the Rust implementation's `sandbox-tools` component |
+Making the exec observable is the easy half. The hard half is not changing what
+the build *does* while you do it.
 
-The tools belong to none of them, and until this repository existed each
-consumer either built its own bundle or scanned `$PATH` and hoped. So it is
-one package, built once, depended on by name — see
-`metacraft-specs/infrastructure/package-distribution.md` §8.
+A drop-in that the shim can load into but that **behaves differently** from the
+binary it replaced is worse than no drop-in at all. Losing the subtree is
+honest: the monitor reports `mcIncomplete`, the action is not cached, and a
+human is told. A behavioural substitution is silent: the monitor reports
+`mcComplete` over a build that did something other than what it would have done
+unmonitored, and that result gets published to the action cache.
 
-## What the bundle contains
+The first version of this bundle took whatever the nix dev shell had on
+`$PATH`, which meant GNU coreutils, GNU grep, GNU sed, gawk and gnutar standing
+in for the BSD tools macOS actually ships. `stat -c` versus `stat -f`. `date -d`
+versus `date -v`. `sed -i` taking a mandatory suffix argument or not. Ten of
+those substitutions were real, and none had been decided.
 
-```text
-<bundle>/bin/<tool>        # mirrors /bin      (bin/sh is bash)
-<bundle>/usr/bin/<tool>    # mirrors /usr/bin
-<bundle>/lib/*.dylib       # bundled non-system dylibs
-```
+## The tier model
 
-56 portable tools: the shells (`bash`, `dash`, `zsh`), the coreutils set, findutils,
-GNU grep/sed/awk, tar/gzip/xz, and `which`/`diff`/`cmp`. Every Mach-O is
-rewritten with `install_name_tool` so it carries **no `/nix/store`
-references** and runs on a machine without Nix — the bundle is a package
-payload, not a symlink farm.
+Every tool is declared in exactly one tier, and the build **fails** if a tool
+resolves from a different tier than the one it is declared in. Silent promotion
+is as unwelcome as silent demotion: both mean the manifest stopped describing
+reality.
 
-## Why the tool set is pinned rather than scanned
-
-`build-bundle.sh` is lifted from io-mon's `scripts/build-sandbox-tools.sh`,
-which resolves each tool against the ambient `$PATH` and skips what it cannot
-find. That is the right fallback for a repository with no pinned tool set, and
-it is exactly what this package removes. Measured on a stock macOS shell:
-
-| Source | Tools | Result for `bash -c '/usr/bin/sed …; /usr/bin/grep …'` |
+| Tier | Source | What a differential diff means |
 |---|---|---|
-| `$PATH` scan | 41 of 56 (no `grep`, `sed`, `awk`, `find`, `tar`, `xz`, `diff`, …) | **2 event-losses** — both SIP execs un-injectable |
-| this package | 56 of 56 | **0 event-losses** — subtree fully captured |
+| **apple** (56 tools) | Apple's own source from [apple-oss-distributions](https://github.com/apple-oss-distributions) (APSL 2.0), compiled by us via nixpkgs `darwin.{system_cmds,shell_cmds,text_cmds,file_cmds,adv_cmds}` | **A bug.** Same program as the system binary, different build. |
+| **near-twin** (5) | No Apple release, but macOS ships the same upstream: `libarchive`→`tar`, `nawk`→`awk`, plus `zsh`, `dash`, `xz` | Version skew. Review, don't panic. |
+| **substitute** (3) | A genuinely different implementation: `bash` 5.x for Apple's bash 3.2.57, GNU `diff`/`cmp` for Apple's FreeBSD diff | **Expected.** This is the documented divergence risk. |
+| **multicall** (3) | `argv[0]` modes of an already-bundled binary: `egrep`/`fgrep` on Apple's `grep`, `gunzip` on Apple's `gzip` | A bug, same as tier 1. |
 
-Two losses is not two missing records: an unknown-scope loss disables the
-action-cache publish for the whole session. A bundle whose contents depend on
-the host is therefore not a package, and `build-bundle.sh` here **fails** when
-a tool cannot be resolved (`SANDBOX_TOOLS_STRICT=0` to override).
+Compiling Apple's own source is what makes tier 1 possible, and it is worth
+being precise about why it works: the binary is behaviourally identical because
+it *is* the same program, and AMFI permits it because it is an ad-hoc-signed
+build of ours rather than an Apple platform binary. Both properties at once —
+which is exactly what a reimplementation cannot offer and a relocated copy
+cannot either.
 
-## Building
+`arch(1)` is the tool that motivated this repo, and it is the clearest case.
+GNU coreutils' `arch` only *prints* the machine type; Apple's also **runs** a
+chosen slice of a universal binary, and `nix` uses precisely that mode to probe
+for Rosetta (`arch -arch x86_64 /usr/bin/true`). A GNU stand-in answers *wrong*
+rather than merely unobserved. This repo first shipped a 329-line
+reimplementation of it; Apple's is 802 lines, and the differential suite found
+the gap (`-32`, and an invalid `ARCHPREFERENCE`, both silently succeeded when
+they should have failed). Apple's own source now builds from nixpkgs and passes
+all 19 cases.
 
-```bash
-nix build .#stackable-hooks-macos-tools     # -> ./result
+The bundle records what it did in `PROVENANCE`: tool, tier, and the exact store
+path it came from.
+
+## Usage
+
+```sh
+nix build .#stackable-hooks-macos-tools
+export CT_SANDBOX_TOOLS_DIR=$PWD/result     # io-mon / codetracer
+export AH_SANDBOX_TOOLS_DIR=$PWD/result     # agent-harbor
 ```
 
-The tool set comes from this flake's pinned nixpkgs; the bundle is a function
-of `flake.lock` and nothing else.
+As a flake input:
 
-## Using it
-
-Point the discovery variable at the bundle:
-
-```bash
-export CT_SANDBOX_TOOLS_DIR=$(nix build --no-link --print-out-paths .#default)
+```nix
+inputs.stackable-hooks-macos-tools.url = "github:metacraft-labs/stackable-hooks-macos-tools";
+# then, in the dev shell:
+#   export STACKABLE_HOOKS_TOOLS_DIR=${inputs.stackable-hooks-macos-tools.packages.${system}.default}
 ```
 
-Discovery order for a consumer is: the explicit variable, then the packaged
-prefix installed by the package, then — as a last resort — a `$PATH` scan.
-The variable name is being unified across implementations
-(`CT_SANDBOX_TOOLS_DIR` in io-mon, `AH_SANDBOX_TOOLS_DIR` in Agent Harbor);
-see the open question in the packaging spec.
+The output is relocatable: every Mach-O has its dylib closure bundled under
+`lib/` and rewritten to `@executable_path`/`@loader_path`, so the directory runs
+on a machine with no Nix at all. The build verifies this and refuses to publish
+a bundle with a surviving `/nix/store` reference.
 
-## What it deliberately does not ship
+## Testing
 
-- **A C compiler.** Not because the compiler does not need a drop-in — it very
-  much does, `/usr/bin/cc` being a SIP-protected `xcode_select` shim — but
-  because the right drop-in is not a shipped binary. `xcrun -f clang` resolves
-  Apple's *own* compiler at a path outside every SIP prefix, signed
-  `flags=0x0(none)`, which takes the injection normally. So the toolchain
-  drop-ins (`cc`, `clang`, `c++`, `clang++`, `cpp`, `ld`, `as`, `ar`, `nm`,
-  `strip`, `lipo`, `libtool`) are **host-resolved symlinks created at populate
-  time**, not payload: a redirect to the same binary the shim would have
-  exec'd, so nothing about the build changes. See metacraft-labs/io-mon#18.
-  Redistributing Apple's 290 MB toolchain would be neither legal nor useful.
-Nothing else. `arch(1)` used to be on this list — see below.
-
-## arch(1): reimplemented, because substituting it would answer wrong
-
-GNU coreutils' `arch` only prints the machine type. Apple's also **runs a
-chosen slice of a universal binary** (`arch -x86_64 prog`), and can set or
-clear the child's environment on the way (`-e`, `-d`, `-c`). Dropping the GNU
-one in would not lose an observation, it would produce a wrong answer: `nix`
-probes for Rosetta with
-
-```bash
-arch -arch x86_64 /usr/bin/true
+```sh
+nix run .#differential           # all tools
+BUNDLE_DIR=./result tests/run-differential.sh sed grep arch
 ```
 
-and a print-only `arch` exits 0 without running anything, reporting that
-x86_64 execution works on a machine where it may not. (That invocation is not
-hypothetical — it is the only `arch` call in a `nix print-dev-env` run here.)
+The suite runs each bundled tool and the SIP binary it replaces against the same
+inputs in identical scratch directories, comparing **exit status, stdout, stderr
+and the resulting directory tree**. What cannot be equal is normalised through
+narrow rules — inode-sized integers, the two scratch paths, the two binary paths
+— so a real difference still shows.
 
-So `src/arch.c` implements the two modes we can implement faithfully:
+Current state: **106 cases, 0 tier-1 failures, 0 near-twin differences, 2
+substitute differences** (GNU `diff -u`/`-c` header format versus Apple's).
 
-- **print** — via `NXGetArchInfoFromCpuType(…, CPU_SUBTYPE_MULTIPLE)`, the
-  same source of truth Apple's binary uses, so quirks come along for free
-  rather than being re-derived;
-- **exec** — `posix_spawnattr_setbinpref_np` + `POSIX_SPAWN_SETEXEC`, which
-  replaces this image in place, so the caller's `wait()` sees the target
-  program and the monitor follows one process rather than inventing a
-  generation.
+Cases live one file per tool in `tests/cases/<tool>.cases`. Adding coverage is
+adding lines there; the fixtures (`@f`, `@f2`, `@dir`, `@link`, `@gz`, `@tar`)
+are materialised fresh for every case.
 
-Everything else — notably the per-application plist mode that `-e`/`-d`/`-c`
-select when no architecture is given (`arch: Can't find any plists for …`) —
-is **handed to `/usr/bin/arch` unchanged**. Losing the injection for that one
-exec is the right trade: a wrong answer is worse than an unobserved one, and
-the monitor records the loss.
+## What is not here yet
 
-`tests/arch-differential.sh` compares ours against Apple's, invocation by
-invocation, including the delegated cases. It caught two divergences that
-would otherwise have shipped: `arm64e` where Apple prints `arm64` (the local
-arch info carries the subtype), and posix_spawnp's errno text with exit 127
-where Apple says `<prog> isn't executable` and exits 1. Current score on
-aarch64-darwin: **15/15**.
+Four SIP binaries still have no drop-in, so a build that execs one still loses
+the subtree behind it — and, because a Level 2 (unknown-scope) loss disables
+cache *hits* for the rest of the session, it costs far more than the one edge:
 
-One consumer-side fix was needed for this to pay off: a `SETEXEC` spawn was
-recorded twice by io-mon's shim, which made a fully-monitored `arch` chain
-report the very loss the drop-in removes (metacraft-labs/io-mon#30). With
-both, `arch -arch arm64 prog` under the monitor goes from 1 event-loss to 0.
+| Tool | Status |
+|---|---|
+| `xcrun` | Not open source. [b-man/xcode-tools](https://github.com/b-man/xcode-tools) is a reimplementation covering `-find`, `-run`, `-sdk`, `-toolchain`, `--show-sdk-path` and `DEVELOPER_DIR`; needs a differential suite before it can be trusted. io-mon's `resolveAppleToolchainTool` currently sidesteps it by resolving the 12 toolchain tools once, at populate time. |
+| `codesign` | Do not reimplement. [`rcodesign`](https://github.com/indygreg/apple-platform-rs) (Rust, full signing/notarisation/stapling) and [`nix-community/sigtool`](https://github.com/nix-community/sigtool) (ad-hoc signing, already used by nixpkgs) both exist. |
+| `plutil` | [`libplist`'s `plistutil`](https://github.com/libimobiledevice/libplist) converts formats but is not flag-compatible; [`withgraphite/plutil`](https://github.com/withgraphite/plutil) claims drop-in status but was archived in July 2023. Most likely a small reimplementation. |
+| `sw_vers` | Not in any Apple OSS release, but trivial: it reads `/System/Library/CoreServices/SystemVersion.plist`. |

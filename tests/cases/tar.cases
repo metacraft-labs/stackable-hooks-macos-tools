@@ -1,0 +1,4 @@
+tf @tar
+tvf @tar
+xf @tar -O
+cf out.tar @dir

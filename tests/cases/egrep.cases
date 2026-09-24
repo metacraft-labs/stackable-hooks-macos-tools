@@ -1,0 +1,2 @@
+'(al|be)[a-z]+' @f
+-c 'a.pha' @f

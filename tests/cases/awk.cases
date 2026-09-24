@@ -1,0 +1,9 @@
+# one-true-awk (what macOS ships) vs whatever is bundled. Programs that use
+# only POSIX awk should agree; gawk extensions would show up here.
+'{print NR, $0}' @f
+'/alpha/ {print}' @f
+'END {print NR}' @f
+'BEGIN {printf "%.3f\n", 1/3}'
+'{n[$0]++} END {for (k in n) print k, n[k]}' @f
+-F, '{print NF}' @f
+'BEGIN {print length("abc"), toupper("x"), substr("hello",2,3)}'

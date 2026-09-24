@@ -1,0 +1,9 @@
+# stat is the sharpest divergence in the whole set: BSD uses -f with %-escapes
+# and GNU uses -c. A GNU stand-in fails outright or prints something else.
+@f
+-f %N @f
+-f %z @f
+-f %Sp @f
+-L @link
+-f %N @link
+-x @f

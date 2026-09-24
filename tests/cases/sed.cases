@@ -1,0 +1,16 @@
+# sed — the classic BSD-vs-GNU trap. `sed -i` takes a mandatory (possibly
+# empty) suffix argument on BSD and an optional one on GNU; `-E` vs `-r`;
+# `\+` and `\|` are GNU extensions. A GNU stand-in here silently rewrites
+# files differently, which is why this must be tier 1.
+'s/alpha/ALPHA/' @f
+-n '2p' @f
+-e 's/a/A/' -e 's/b/B/' @f
+-E 's/(al|be)/X/' @f
+-n '$=' @f
+'s/alpha/A/g' @f
+-i '' 's/alpha/A/' @f
+-i.bak 's/alpha/A/' @f
+-n '/beta/p' @f
+'y/abc/xyz/' @f
+-E 's/[[:alpha:]]+/W/' @f
+'s/nothing/x/' @f

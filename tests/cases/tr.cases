@@ -1,0 +1,4 @@
+'a-z' 'A-Z' < @f
+-d 'aeiou' < @f
+-s 'l' < @f
+-c 'a-z\n' 'X' < @f

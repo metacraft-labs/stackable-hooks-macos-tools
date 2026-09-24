@@ -1,0 +1,15 @@
+alpha @f
+-c alpha @f
+-n beta @f
+-v alpha @f
+-i BETA @f
+-E '(al|be)[a-z]+' @f
+-o 'al..' @f
+-l alpha @f @f2
+-r alpha @dir
+-w alpha @f
+nomatchhere @f
+-q alpha @f
+-e alpha -e beta @f
+-A1 beta @f
+-B1 beta @f

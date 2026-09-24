@@ -1,0 +1,8 @@
+# BSD date takes -v for relative arithmetic and -r for epoch; GNU takes -d
+# and -d @epoch. Nothing about these two agrees.
+-r 0
+-r 0 '+%Y-%m-%d'
+-u -r 1000000000
+-u -r 1000000000 '+%F %T'
+-u -j -f '%Y-%m-%d' 2020-01-02 '+%s'
+-u -r 0 -v +1d '+%F'
