@@ -101,6 +101,48 @@ see the open question in the packaging spec.
   time**, not payload: a redirect to the same binary the shim would have
   exec'd, so nothing about the build changes. See metacraft-labs/io-mon#18.
   Redistributing Apple's 290 MB toolchain would be neither legal nor useful.
-- **`arch(1)`.** There is no non-Apple build with Apple's semantics
-  (`arch -x86_64 …`). It stays un-injectable until the EndpointSecurity
-  backend lands. An explicit gap beats a drop-in that silently misbehaves.
+Nothing else. `arch(1)` used to be on this list — see below.
+
+## arch(1): reimplemented, because substituting it would answer wrong
+
+GNU coreutils' `arch` only prints the machine type. Apple's also **runs a
+chosen slice of a universal binary** (`arch -x86_64 prog`), and can set or
+clear the child's environment on the way (`-e`, `-d`, `-c`). Dropping the GNU
+one in would not lose an observation, it would produce a wrong answer: `nix`
+probes for Rosetta with
+
+```bash
+arch -arch x86_64 /usr/bin/true
+```
+
+and a print-only `arch` exits 0 without running anything, reporting that
+x86_64 execution works on a machine where it may not. (That invocation is not
+hypothetical — it is the only `arch` call in a `nix print-dev-env` run here.)
+
+So `src/arch.c` implements the two modes we can implement faithfully:
+
+- **print** — via `NXGetArchInfoFromCpuType(…, CPU_SUBTYPE_MULTIPLE)`, the
+  same source of truth Apple's binary uses, so quirks come along for free
+  rather than being re-derived;
+- **exec** — `posix_spawnattr_setbinpref_np` + `POSIX_SPAWN_SETEXEC`, which
+  replaces this image in place, so the caller's `wait()` sees the target
+  program and the monitor follows one process rather than inventing a
+  generation.
+
+Everything else — notably the per-application plist mode that `-e`/`-d`/`-c`
+select when no architecture is given (`arch: Can't find any plists for …`) —
+is **handed to `/usr/bin/arch` unchanged**. Losing the injection for that one
+exec is the right trade: a wrong answer is worse than an unobserved one, and
+the monitor records the loss.
+
+`tests/arch-differential.sh` compares ours against Apple's, invocation by
+invocation, including the delegated cases. It caught two divergences that
+would otherwise have shipped: `arm64e` where Apple prints `arm64` (the local
+arch info carries the subtype), and posix_spawnp's errno text with exit 127
+where Apple says `<prog> isn't executable` and exits 1. Current score on
+aarch64-darwin: **15/15**.
+
+One consumer-side fix was needed for this to pay off: a `SETEXEC` spawn was
+recorded twice by io-mon's shim, which made a fully-monitored `arch` chain
+report the very loss the drop-in removes (metacraft-labs/io-mon#30). With
+both, `arch -arch arm64 prog` under the monitor goes from 1 event-loss to 0.

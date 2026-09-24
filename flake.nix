@@ -41,6 +41,26 @@
 
         toolPath = pkgs.lib.makeBinPath toolPackages;
 
+        # arch(1) is compiled, not copied: see src/arch.c for why no existing
+        # build can stand in for it.
+        archTool = pkgs.stdenv.mkDerivation {
+          pname = "stackable-hooks-macos-arch";
+          version = "0.1.0";
+          src = ./src;
+          dontConfigure = true;
+          buildPhase = ''
+            runHook preBuild
+            $CC -O2 -Wall -Wextra -Wno-deprecated-declarations \
+              -o arch arch.c
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            install -Dm755 arch $out/bin/arch
+            runHook postInstall
+          '';
+        };
+
         bundle = pkgs.stdenvNoCC.mkDerivation {
           pname = "stackable-hooks-macos-tools";
           version = "0.1.0";
@@ -60,6 +80,7 @@
             export SANDBOX_TOOLS_PATH=${toolPath}
             export SANDBOX_TOOLS_OUT_DIR=$out
             export SANDBOX_TOOLS_STRICT=1
+            export SANDBOX_TOOLS_ARCH_BIN=${archTool}/bin/arch
             bash ./build-bundle.sh
             runHook postBuild
           '';
@@ -74,6 +95,7 @@
       {
         packages = {
           stackable-hooks-macos-tools = bundle;
+          arch = archTool;
           default = bundle;
         };
 

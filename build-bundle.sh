@@ -221,6 +221,31 @@ for f in "$out_dir/bin"/* "$out_dir/lib"/*; do
   fi
 done
 
+# ---------------------------------------------------------------------------
+# arch(1): the one tool with no non-Apple build, so we ship our own.
+#
+# GNU coreutils' `arch` only PRINTS the machine type; Apple's also RUNS a
+# chosen slice of a universal binary, and `nix` uses exactly that mode to probe
+# for Rosetta (`arch -arch x86_64 /usr/bin/true`). Substituting the GNU one
+# would answer wrong rather than merely unobserved, so src/arch.c reimplements
+# the exec and print modes and hands everything else to /usr/bin/arch.
+# tests/arch-differential.sh is what keeps it honest.
+# ---------------------------------------------------------------------------
+if [ -n "${SANDBOX_TOOLS_ARCH_BIN:-}" ]; then
+  if [ ! -x "$SANDBOX_TOOLS_ARCH_BIN" ]; then
+    echo "SANDBOX_TOOLS_ARCH_BIN is not executable: $SANDBOX_TOOLS_ARCH_BIN" >&2
+    exit 1
+  fi
+  copy_and_relocate "$SANDBOX_TOOLS_ARCH_BIN" arch
+  copied+=("arch")
+  mkdir -p "$out_dir/usr/bin"
+  ln -sf "../../bin/arch" "$out_dir/usr/bin/arch"
+elif [ "$strict" = "1" ]; then
+  echo "SANDBOX_TOOLS_ARCH_BIN is required: arch(1) has no non-Apple build to" >&2
+  echo "resolve, so the bundle must carry the reimplementation." >&2
+  exit 1
+fi
+
 echo "sandbox-tools bundle: $out_dir"
 echo "  copied: ${#copied[@]} tools (${copied[*]})"
 if [ "${#missing[@]}" -gt 0 ]; then
