@@ -1,3 +1,16 @@
 -l @gz
 -t @gz
--c @f
+# `-n`, and a hash rather than raw bytes, are both load-bearing.
+#
+# gzip stores the input file's MTIME in the header (RFC 1952 section 2.3.1,
+# bytes 4-7), and this harness materialises the fixtures in TWO scratch trees,
+# one per side. Their mtimes need not fall in the same second, so a bare
+# `-c @f` compares the clock, not the tool: measured 2026-11-06, the same
+# binary on the same content produced `1f8b 0808 eecd ed6a` and
+# `1f8b 0808 e09c 5569` across a touch, while system and bundle gzip agreed
+# byte for byte at a fixed mtime. `-n` suppresses the name and timestamp.
+#
+# The hash keeps the comparison honest for a second reason: the harness
+# captures output through a command substitution, which drops null bytes, so
+# raw DEFLATE output is compared lossily and bash warns about it.
+-nc @f | shasum -a 256
